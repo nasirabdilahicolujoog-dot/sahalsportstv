@@ -1,0 +1,15 @@
+**/node_modules/
+**/build/
+**/.gradle/
+**/local.properties
+**/.env
+**/.env.*
+!**/.env.example
+**/*.jks
+**/*.keystore
+**/test-results/
+**/.test-pg/
+artifacts/
+
+# Local development database cluster (never commit)
+.devpg/

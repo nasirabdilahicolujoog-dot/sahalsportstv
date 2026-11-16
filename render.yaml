@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: sahal-sports-tv-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: TRUST_PROXY_HOPS
+        value: 1
+      - key: FCM_TOPIC_PREFIX
+        value: sahal
+      - key: DATABASE_URL
+        sync: false
+      - key: PROVIDER_ENCRYPTION_KEY
+        sync: false
