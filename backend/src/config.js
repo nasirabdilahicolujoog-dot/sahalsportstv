@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 export function loadConfig(env = process.env) {
@@ -5,7 +6,7 @@ export function loadConfig(env = process.env) {
   const schema = z.object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     DATABASE_URL: z.string().url(),
-    PROVIDER_ENCRYPTION_KEY: z.string().regex(/^[A-Za-z0-9+/]{43}=$/),
+    PROVIDER_ENCRYPTION_KEY: z.string().min(32),
     PUBLIC_BASE_URL: z.string().url().default('http://127.0.0.1:8080'),
     HOST: z.string().default('127.0.0.1'),
     PORT: z.coerce.number().int().min(1).max(65535).default(8080),
@@ -16,8 +17,8 @@ export function loadConfig(env = process.env) {
   const r = schema.safeParse(source);
   if (!r.success) throw new Error(`Invalid configuration fields: ${[...new Set(r.error.issues.map(i => i.path[0]))].join(', ')}`);
   const v = r.data;
-  const key = Buffer.from(v.PROVIDER_ENCRYPTION_KEY, 'base64');
-  if (key.length !== 32 || key.toString('base64') !== v.PROVIDER_ENCRYPTION_KEY) throw new Error('Encryption key must contain 32 bytes');
+  const rawKey = v.PROVIDER_ENCRYPTION_KEY;
+  const key = /^[A-Za-z0-9+/]{43}=$/.test(rawKey) ? Buffer.from(rawKey, 'base64') : createHash('sha256').update(rawKey, 'utf8').digest();
   const origin = new URL(v.PUBLIC_BASE_URL);
   if (origin.username || origin.password || origin.search || origin.hash || !['http:', 'https:'].includes(origin.protocol) || origin.pathname !== '/') throw new Error('PUBLIC_BASE_URL must be an origin');
   if (v.NODE_ENV === 'production' && origin.protocol !== 'https:') throw new Error('HTTPS is required in production');

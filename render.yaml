@@ -1,13 +1,22 @@
-services:
-  - type: web
-    name: sahal-sports-tv-api
-    runtime: docker
+databases:
+  - name: sahal_db
+    databaseName: sahal_sports
     plan: free
     region: frankfurt
-    dockerContext: ./backend
-    dockerfilePath: ./backend/Dockerfile
+
+services:
+  - type: web
+    name: sahal-api
+    runtime: node
+    plan: free
+    region: frankfurt
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: npm start
     healthCheckPath: /health
     envVars:
+      - key: NODE_VERSION
+        value: "24"
       - key: NODE_ENV
         value: production
       - key: HOST
@@ -16,7 +25,9 @@ services:
         value: 1
       - key: FCM_TOPIC_PREFIX
         value: sahal
-      - key: DATABASE_URL
-        sync: false
       - key: PROVIDER_ENCRYPTION_KEY
-        sync: false
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sahal_db
+          property: connectionString
