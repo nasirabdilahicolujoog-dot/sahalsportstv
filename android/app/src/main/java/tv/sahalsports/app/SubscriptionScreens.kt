@@ -38,8 +38,8 @@ import java.time.Instant
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(Color(0xFFF9F6FF)).padding(23.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
             Text("SAHAL PREMIUM", color = Color(0xFF371265), letterSpacing = 2.sp, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             Row(verticalAlignment = Alignment.Bottom) {
-                Text("$0.50", fontSize = 47.sp, fontWeight = FontWeight.ExtraBold, color = Ink, letterSpacing = (-2).sp)
-                Text(" / month", fontSize = 14.sp, color = Color(0xFF6A6176), modifier = Modifier.padding(bottom = 10.dp))
+                Text(vm.priceValue, fontSize = 47.sp, fontWeight = FontWeight.ExtraBold, color = Ink, letterSpacing = (-2).sp)
+                Text(" ${vm.currency} / month", fontSize = 14.sp, color = Color(0xFF6A6176), modifier = Modifier.padding(bottom = 10.dp))
             }
             HorizontalDivider(color = Color(0xFFE2DCEB))
             listOf("Unlimited licensed live channels", "HD streaming quality", "Premium sports content", "Football, basketball, tennis & more").forEach {
@@ -55,7 +55,7 @@ import java.time.Instant
                 Text("Until ${formatDate(subscription.text("expiresAt"))}", color = Ink, fontSize = 12.sp)
                 ActionButton("Start watching") { vm.nav("live") }
             } else {
-                if (trial == null || trial.optBoolean("eligible")) ActionButton("Try 15 minutes free", gold = true, enabled = !vm.busy) { vm.startTrial() }
+                if (trial == null || trial.optBoolean("eligible")) ActionButton("Try ${vm.trialMinutes} minutes free", gold = true, enabled = !vm.busy) { vm.startTrial() }
                 else if (trial.optLong("remainingSeconds") > 0) ActionButton("View your trial", gold = true) { vm.go("trial") }
                 else Text("Your Free Trial Has Expired.\nPlease Subscribe to Continue Watching.", color = Color(0xFF8E3159), fontSize = 12.sp)
                 ActionButton("Subscribe now", enabled = !vm.busy) { vm.requireLogin("payment") }
@@ -77,7 +77,7 @@ import java.time.Instant
         if (vm.user != null && expiry.isNotBlank()) vm.perform { vm.refreshAccount() }
     }
     Page {
-        Heading("A taste of Premium.", "15 minutes. All the excitement.")
+        Heading("A taste of Premium.", "${vm.trialMinutes} minutes. All the excitement.")
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(Panel).padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(22.dp)) {
             Icon(Icons.Rounded.Timer, null, Modifier.size(48.dp), tint = Gold)
             Badge(if (remaining > 0) "TRIAL ACTIVE" else if (trial?.optBoolean("eligible") != false) "READY WHEN YOU ARE" else "TRIAL EXPIRED", if (remaining > 0) Green else Gold)
@@ -85,7 +85,7 @@ import java.time.Instant
             Text(if (remaining > 0) "Your time to explore." else if (trial?.optBoolean("eligible") != false) "Start your free trial to begin watching." else "Your Free Trial Has Expired.\nPlease Subscribe to Continue Watching.", textAlign = TextAlign.Center, color = Muted, lineHeight = 22.sp)
             if (remaining > 0) ActionButton("Explore live channels", gold = true) { vm.nav("live") }
             else if (trial?.optBoolean("eligible") != false) ActionButton("Start free trial", gold = true, enabled = !vm.busy) { vm.startTrial() }
-            ActionButton("Subscribe for $0.50 / month") { vm.requireLogin("payment") }
+            ActionButton("Subscribe for ${vm.priceLabel} / month") { vm.requireLogin("payment") }
         }
         Text("Trial eligibility and expiry are verified by the server. Changing this device's time does not extend access.", fontSize = 11.sp, color = Muted, lineHeight = 18.sp)
     }
@@ -114,7 +114,7 @@ fun secondsRemaining(expiry: String): Long = runCatching { ((Instant.parse(expir
             Heading("Check your phone.", "Approve the request in your mobile money account. Never share your PIN in this app.")
             AppCard {
                 Badge(vm.payment?.text("status", "pending")?.uppercase().orEmpty())
-                Detail("Amount", "$0.50 USD")
+                Detail("Amount", vm.payment?.let { "${formatMinor(it.optInt("amountMinor", vm.priceMinor))} ${it.text("currency", vm.currency)}" } ?: vm.priceLabel)
                 Detail("Payment method", vm.payment?.text("provider").orEmpty())
                 Detail("Transaction reference", vm.payment?.text("reference", vm.payment?.text("id").orEmpty()).orEmpty())
             }
@@ -129,7 +129,7 @@ fun secondsRemaining(expiry: String): Long = runCatching { ((Instant.parse(expir
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Rounded.WorkspacePremium, null, Modifier.size(33.dp), tint = Gold)
                 Column(Modifier.weight(1f).padding(start = 12.dp)) { Text("Sahal Premium", fontWeight = FontWeight.Bold); Text("Monthly subscription", color = Muted, fontSize = 12.sp) }
-                Text("$0.50", fontSize = 25.sp, color = Gold, fontWeight = FontWeight.Bold)
+                Text(vm.priceValue, fontSize = 25.sp, color = Gold, fontWeight = FontWeight.Bold)
             }
         }
         Text("PAYMENT METHOD", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp)
@@ -141,8 +141,8 @@ fun secondsRemaining(expiry: String): Long = runCatching { ((Instant.parse(expir
             }
         }
         Field("Mobile money phone number", phone, { phone = it }, keyboard = KeyboardType.Phone, icon = Icons.Rounded.PhoneAndroid)
-        AppCard { Detail("Subscription", "$0.50 USD"); Detail("Duration", "1 month"); HorizontalDivider(color = Line); Detail("Total", "$0.50 USD", Gold) }
-        ActionButton("Pay $0.50", enabled = !vm.busy && phone.isNotBlank()) { vm.pay(provider, phone) }
+        AppCard { Detail("Subscription", vm.priceLabel); Detail("Duration", "1 month"); HorizontalDivider(color = Line); Detail("Total", vm.priceLabel, Gold) }
+        ActionButton("Pay ${vm.priceLabel}", enabled = !vm.busy && phone.isNotBlank()) { vm.pay(provider, phone) }
         Text("A secure request will be sent to your phone. Provider availability is checked by the backend; payment is never simulated.", color = Muted, fontSize = 11.sp, lineHeight = 17.sp)
         TextButton(onClick = { vm.back() }, Modifier.align(Alignment.CenterHorizontally)) { Text("Cancel", color = Muted) }
     }

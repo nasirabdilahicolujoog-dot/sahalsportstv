@@ -35,7 +35,12 @@ export async function createApp({ pool, config, adapters = {} }) {
 
   const smallJson = express.json({ limit: '32kb' });
   const logoJson = express.json({ limit: '3mb' });
-  app.use((req, res, next) => (req.method === 'POST' && req.path === '/v1/admin/logos' ? logoJson : smallJson)(req, res, next));
+  const adJson = express.json({ limit: '8mb' });
+  app.use((req, res, next) => {
+    const parser = req.method === 'POST' && req.path === '/v1/admin/logos' ? logoJson
+      : req.method === 'POST' && req.path === '/v1/admin/ads' ? adJson : smallJson;
+    return parser(req, res, next);
+  });
 
   const limitHandler = (req, res) => res.status(429).json({ error: { code: 'rate_limited', message: 'Too many requests. Try again later.' } });
   const general = rateLimit({ windowMs: 15 * 60_000, limit: 2000, standardHeaders: 'draft-7', legacyHeaders: false, handler: limitHandler });
@@ -54,15 +59,33 @@ export async function createApp({ pool, config, adapters = {} }) {
     const { rows: channels } = await pool.query('SELECT * FROM channels ORDER BY name');
     const { rows: [settings] } = await pool.query('SELECT * FROM app_settings');
     const { rows: matches } = await pool.query('SELECT id,home,away,competition,starts_at AS "startsAt",live FROM matches ORDER BY starts_at LIMIT 100');
+    const { rows: ads } = await pool.query('SELECT id,title,mime_type,created_at FROM audio_ads WHERE active ORDER BY created_at DESC LIMIT 10');
     const base = ['Football', 'Basketball', 'Tennis', 'UFC', 'Cricket', 'Other Sports'];
     const categories = [...new Set([...base, ...channels.map(channel => channel.category)])];
     res.json({
       channels: channels.map(channel => ({ id: channel.id, name: channel.name, category: channel.category,
         quality: channel.quality, active: channel.active, premium: channel.premium,
         logoUrl: channel.logo_url || '', licensed: channel.licensed })),
-      categories, matches, priceUsd: 0.5, trialMinutes: settings.trial_minutes,
-      appName: settings.app_name, supportEmail: settings.support_email,
+      categories, matches, price: settings.price_minor / 100, priceMinor: settings.price_minor,
+      currency: settings.currency, trialMinutes: settings.trial_minutes,
+      appName: settings.app_name, supportEmail: settings.support_email, supportPhone: settings.support_phone,
+      logoUrl: settings.logo_url,
+      ads: ads.map(ad => ({ id: ad.id, title: ad.title, mimeType: ad.mime_type,
+        url: `${config.publicBaseUrl}/v1/ads/${ad.id}/audio` })),
     });
+  });
+
+  api.get('/ads/:id/audio', async (req, res) => {
+    const id = validate(z.uuid(), req.params.id);
+    const { rows: [ad] } = await pool.query('SELECT mime_type,data FROM audio_ads WHERE id=$1 AND active', [id]);
+    if (!ad) fail(404, 'ad_not_found', 'Audio ad not found.');
+    res.status(200);
+    res.setHeader('Content-Type', ad.mime_type);
+    res.setHeader('Content-Length', ad.data.length);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('Accept-Ranges', 'none');
+    res.end(ad.data);
   });
 
   api.get('/media/:id', async (req, res) => {

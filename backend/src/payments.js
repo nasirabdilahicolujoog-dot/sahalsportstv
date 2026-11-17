@@ -9,7 +9,8 @@ const externalId = z.string().min(1).max(255).refine(value => value.trim() === v
 const initiationResult = z.object({ reference: externalId, instructions: z.string().max(2000).optional() }).strict();
 const evidenceFields = {
   source: z.literal('server_api'), provider: providerSchema, paymentId: uuidSchema,
-  reference: externalId, amountMinor: z.literal(50), currency: z.literal('USD'),
+  reference: externalId, amountMinor: z.number().int().positive().max(100000000),
+  currency: z.string().regex(/^[A-Z]{3,4}$/),
 };
 const verificationResult = z.discriminatedUnion('status', [
   z.object({ ...evidenceFields, status: z.literal('pending') }).strict(),
@@ -23,14 +24,16 @@ const terminal = new Set(['succeeded', 'failed', 'refunded']);
 
 export function paymentView(row) {
   return {
-    id: row.id, userId: row.user_id, provider: row.provider, amount: 0.5, amountMinor: 50,
+    id: row.id, userId: row.user_id, provider: row.provider,
+    amount: row.amount_minor / 100, amountMinor: row.amount_minor,
     currency: row.currency, status: row.status, reference: row.provider_reference,
     createdAt: row.created_at,
   };
 }
 
 /**
- * Fixed-price payment domain. Only trusted server-side adapter verification grants time.
+ * Server-priced payment domain: the administrator sets the price and currency in app_settings.
+ * Only trusted server-side adapter verification grants time.
  * User locks serialize grants; unique references, transactions and events prevent replay.
  * Short transactions persist intent before external I/O; no DB connection is held while
  * waiting on a provider. An uncertain initiation stays initiating and is recovered by
@@ -155,6 +158,7 @@ export function createPaymentService({ pool, config, adapters = {} }) {
 
   function bind(payment, evidence) {
     if (evidence.provider !== payment.provider || evidence.paymentId !== payment.id ||
+        evidence.amountMinor !== payment.amount_minor || evidence.currency !== payment.currency ||
         (payment.provider_reference !== null && payment.provider_reference !== evidence.reference) ||
         (payment.provider_transaction_id !== null && evidence.transactionId !== undefined &&
           payment.provider_transaction_id !== evidence.transactionId)) {
@@ -181,13 +185,16 @@ export function createPaymentService({ pool, config, adapters = {} }) {
           }
           return { row, created: false };
         }
-        const { rows } = await db.query('INSERT INTO payments(user_id,provider,phone) VALUES($1,$2,$3) RETURNING *', [userId, provider, phone]);
+        const { rows: [settings] } = await db.query('SELECT currency,price_minor FROM app_settings FOR SHARE');
+        const { rows } = await db.query(`INSERT INTO payments(user_id,provider,phone,amount_minor,currency)
+          VALUES($1,$2,$3,$4,$5) RETURNING *`, [userId, provider, phone, settings.price_minor, settings.currency]);
         await audit(db, userId, 'payment.initiated', 'payment', rows[0].id, { integration: configured.fingerprint, environment: 'production' });
         return { row: rows[0], created: true };
       });
       if (!intent.created) return paymentView(intent.row);
       const result = parseResult(initiationResult, await invoke(configured.adapter, 'initiate', {
-        paymentId: intent.row.id, amountMinor: 50, currency: 'USD', phone, credentials: configured.credentials,
+        paymentId: intent.row.id, amountMinor: intent.row.amount_minor, currency: intent.row.currency,
+        phone, credentials: configured.credentials,
       }));
       return transaction(pool, async db => {
         const row = await locked(db, intent.row);
@@ -305,7 +312,7 @@ export function createPaymentService({ pool, config, adapters = {} }) {
       if (reserved.status === 'refunded') return paymentView(reserved);
       const evidence = parseResult(refundResult, await invoke(configured.adapter, 'refund', {
         paymentId: id, reference: reserved.provider_reference, transactionId: reserved.provider_transaction_id,
-        amountMinor: 50, currency: 'USD', credentials: configured.credentials,
+        amountMinor: reserved.amount_minor, currency: reserved.currency, credentials: configured.credentials,
       }));
       bind(reserved, evidence);
       return transaction(pool, async db => {

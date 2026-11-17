@@ -50,6 +50,7 @@ fun AdminScreen(vm: AppState) {
             path == "admin/edahab" -> AdminProvider(vm, "edahab")
             path == "admin/trials" -> AdminTrials(vm)
             path == "admin/notifications" -> AdminNotifications(vm)
+            path == "admin/ads" -> AdminAds(vm)
             path == "admin/reports" -> AdminReadOnly(vm, "Reports", "/admin/reports", "Figures and breakdowns returned by your backend. No estimates or sample data.")
             path == "admin/settings" -> AdminSettings(vm)
             path == "admin/security" -> AdminSecurity(vm)
@@ -263,7 +264,7 @@ private fun AdminDashboard(vm: AppState) {
             val metrics = listOf(
                 Triple("totalCustomers", "Total customers", Purple),
                 Triple("activeSubscriptions", "Active subscriptions", Color(0xFF1C9978)),
-                Triple("totalRevenue", "Revenue · USD", Color(0xFF9D32B7)),
+                Triple("totalRevenue", "Revenue · ${vm.currency}", Color(0xFF9D32B7)),
                 Triple("activeStreams", "Active streams", Color(0xFF2774C6)),
                 Triple("expiredSubscriptions", "Expired subscriptions", Color(0xFF67507E)),
                 Triple("todayPayments", "Today's payments", Color(0xFFAA7B20))
@@ -296,8 +297,9 @@ private fun AdminDashboard(vm: AppState) {
                 Triple("eDahab", "Merchant credentials and connection test", "edahab"),
                 Triple("Free trials", "Trial settings and recorded usage", "trials"),
                 Triple("Notifications", "Send announcements and view history", "notifications"),
+                Triple("Audio ads", "Upload voice advertisements for the home screen", "ads"),
                 Triple("Reports", "Backend reporting data", "reports"),
-                Triple("App settings", "App name and support address", "settings"),
+                Triple("App settings", "Name, logo, contact, currency and price", "settings"),
                 Triple("Security", "Change your administrator password", "security"),
                 Triple("Activity logs", "Backend audit trail", "logs")
             ).forEach { (title, subtitle, route) -> MenuRow(title, subtitle) { vm.go("admin/$route") } }
@@ -433,8 +435,10 @@ private fun AdminCustomers(vm: AppState) {
     var search by remember { mutableStateOf("") }
     var submitted by remember { mutableStateOf("") }
     var pending by remember { mutableStateOf<Pair<JSONObject, String>?>(null) }
+    var editing by remember { mutableStateOf<JSONObject?>(null) }
+    var resetting by remember { mutableStateOf<JSONObject?>(null) }
     val endpoint = "/admin/customers?search=${Uri.encode(submitted)}"
-    AdminDataPage(vm, "Customers", "Search backend customer records and manage account access.", listOf(endpoint), controls = {
+    AdminDataPage(vm, "Customers", "Search backend customer records, edit details and manage account access.", listOf(endpoint), controls = {
         Field("Search name, email or phone", search, { search = it }, enabled = !vm.busy)
         ActionButton("Search customers", enabled = !vm.busy) { submitted = search.trim() }
     }) { state ->
@@ -449,6 +453,14 @@ private fun AdminCustomers(vm: AppState) {
                     Detail("Phone", adminValue(customer, "phone"))
                     if (adminId(customer).isNotBlank()) {
                         ActionButton("Details & history", enabled = state.enabled(vm)) { vm.go("admin/customers/${adminSegment(adminId(customer))}") }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { editing = customer }, enabled = state.enabled(vm), modifier = Modifier.weight(1f)) {
+                                Text("Edit details", fontSize = 12.sp)
+                            }
+                            OutlinedButton(onClick = { resetting = customer }, enabled = state.enabled(vm), modifier = Modifier.weight(1f)) {
+                                Text("Reset password", fontSize = 12.sp)
+                            }
+                        }
                         AdminCustomerActions(vm, customer, state.enabled(vm)) { action -> pending = customer to action }
                     }
                 }
@@ -456,6 +468,12 @@ private fun AdminCustomers(vm: AppState) {
         }
         pending?.let { (customer, action) ->
             AdminCustomerConfirmation(vm, customer, action, { pending = null }) { state.refresh() }
+        }
+        editing?.let { customer ->
+            AdminCustomerEditor(vm, customer, { editing = null }) { state.refresh() }
+        }
+        resetting?.let { customer ->
+            AdminPasswordReset(vm, customer, { resetting = null })
         }
     }
 }
@@ -468,6 +486,86 @@ private fun AdminCustomerActions(vm: AppState, customer: JSONObject, enabled: Bo
     OutlinedButton(onClick = { onAction("delete") }, enabled = enabled && adminId(customer) != vm.user?.text("id")) {
         Text("Delete customer", color = MaterialTheme.colorScheme.error)
     }
+}
+
+@Composable
+private fun AdminCustomerEditor(vm: AppState, customer: JSONObject, onDismiss: () -> Unit, onSaved: () -> Unit) {
+    var name by remember { mutableStateOf(customer.text("name")) }
+    var email by remember { mutableStateOf(customer.text("email")) }
+    var phone by remember { mutableStateOf(customer.text("phone")) }
+    var status by remember { mutableStateOf(customer.text("status").ifBlank { "active" }) }
+    var error by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        modifier = Modifier.imePadding(),
+        onDismissRequest = { if (!vm.busy) onDismiss() },
+        title = { Text("Edit customer") },
+        text = {
+            Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Field("Full name", name, { name = it }, enabled = !vm.busy)
+                Field("Email address", email, { email = it }, keyboard = KeyboardType.Email, enabled = !vm.busy)
+                Field("Phone number (with country code)", phone, { phone = it }, keyboard = KeyboardType.Phone, enabled = !vm.busy)
+                AdminChoice("Account status", status, listOf("active" to "Active", "suspended" to "Suspended"), !vm.busy) { status = it }
+                Text("Suspending the account signs the customer out on every device. Changing the phone number or email does not change the password.", color = Muted, fontSize = 12.sp)
+                AdminError(error)
+                if (vm.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = !vm.busy, onClick = {
+                error = when {
+                    name.trim().length < 2 -> "Enter the customer's full name."
+                    !android.util.Patterns.EMAIL_ADDRESS.matcher(email.trim()).matches() -> "Enter a valid email address."
+                    !Regex("^\\+?[1-9][0-9]{7,14}$").matches(phone.trim()) -> "Enter the phone number with country code, digits only."
+                    else -> null
+                }
+                if (error == null) adminPerform(vm, { error = it }) {
+                    vm.api.call("PATCH", "/admin/customers/${adminSegment(adminId(customer))}",
+                        json("name" to name.trim(), "email" to email.trim(), "phone" to phone.trim(), "status" to status))
+                    vm.message = "Customer details updated by the backend."
+                    onSaved()
+                    onDismiss()
+                }
+            }) { Text("Save details") }
+        },
+        dismissButton = { TextButton(enabled = !vm.busy, onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun AdminPasswordReset(vm: AppState, customer: JSONObject, onDismiss: () -> Unit) {
+    var password by remember { mutableStateOf("") }
+    var confirmation by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        modifier = Modifier.imePadding(),
+        onDismissRequest = { if (!vm.busy) onDismiss() },
+        title = { Text("Reset customer password") },
+        text = {
+            Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Set a new password for ${adminName(customer)}. Existing sessions are signed out on every device. Give the new password to the customer directly; it is never shown again.", color = Muted)
+                Field("New password", password, { password = it }, secret = true, enabled = !vm.busy)
+                Field("Confirm new password", confirmation, { confirmation = it }, secret = true, enabled = !vm.busy)
+                Text("Use at least 12 characters. The backend enforces the password policy.", color = Muted, fontSize = 12.sp)
+                AdminError(error)
+                if (vm.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = !vm.busy, onClick = {
+                error = when {
+                    password.length < 12 -> "Use a password with at least 12 characters."
+                    password != confirmation -> "The passwords do not match."
+                    else -> null
+                }
+                if (error == null) adminPerform(vm, { error = it }) {
+                    vm.api.call("POST", "/admin/customers/${adminSegment(adminId(customer))}/password", json("newPassword" to password))
+                    vm.message = "Password reset. The customer was signed out on every device."
+                    onDismiss()
+                }
+            }) { Text("Reset password") }
+        },
+        dismissButton = { TextButton(enabled = !vm.busy, onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @Composable
@@ -493,6 +591,8 @@ private fun adminBelongsTo(item: JSONObject, id: String): Boolean =
 @Composable
 private fun AdminCustomerDetails(vm: AppState, id: String) {
     var action by remember { mutableStateOf<String?>(null) }
+    var editing by remember { mutableStateOf<JSONObject?>(null) }
+    var resetting by remember { mutableStateOf<JSONObject?>(null) }
     val customersPath = "/admin/customers"
     AdminDataPage(vm, "Customer details", "History is matched by customer ID from the available backend lists, not a separate history service.",
         listOf(customersPath, "/admin/subscriptions", "/admin/payments")) { state ->
@@ -500,7 +600,17 @@ private fun AdminCustomerDetails(vm: AppState, id: String) {
         val customer = state.data[customersPath]?.items()?.firstOrNull { adminId(it) == id }
         if (customer != null) {
             AdminRecord(customer, adminName(customer))
-            AppCard { AdminCustomerActions(vm, customer, state.enabled(vm)) { action = it } }
+            AppCard {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { editing = customer }, enabled = state.enabled(vm), modifier = Modifier.weight(1f)) {
+                        Text("Edit details", fontSize = 12.sp)
+                    }
+                    OutlinedButton(onClick = { resetting = customer }, enabled = state.enabled(vm), modifier = Modifier.weight(1f)) {
+                        Text("Reset password", fontSize = 12.sp)
+                    }
+                }
+                AdminCustomerActions(vm, customer, state.enabled(vm)) { action = it }
+            }
             customer.optJSONArray("history")?.let { history ->
                 Section("Account history")
                 AdminRecords(history.objects(), "No account history returned", "No account-history entries are included in this record.")
@@ -510,6 +620,8 @@ private fun AdminCustomerDetails(vm: AppState, id: String) {
                     if (selectedAction == "delete") vm.nav("admin/customers") else state.refresh()
                 }
             }
+            editing?.let { selected -> AdminCustomerEditor(vm, selected, { editing = null }) { state.refresh() } }
+            resetting?.let { selected -> AdminPasswordReset(vm, selected, { resetting = null }) }
         } else if (state.data.containsKey(customersPath)) {
             EmptyState("Customer not in returned data", "The customer may have been removed or may be outside the returned customer list. No separate customer-detail API is available.")
         }
@@ -755,6 +867,98 @@ private fun AdminNotifications(vm: AppState) {
     }
 }
 
+private fun adminFileSize(bytes: Int): String = when {
+    bytes >= 1024 * 1024 -> String.format(Locale.ROOT, "%.1f MB", bytes / 1048576.0)
+    bytes >= 1024 -> "${bytes / 1024} KB"
+    else -> "$bytes B"
+}
+
+@Composable
+private fun AdminAds(vm: AppState) {
+    var uploading by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf<JSONObject?>(null) }
+    var actionError by remember { mutableStateOf<String?>(null) }
+    AdminDataPage(vm, "Audio ads", "Upload voice advertisements. Active recordings appear on the customer home screen.", listOf("/admin/ads")) { state ->
+        ActionButton("Upload audio ad", gold = true, enabled = state.enabled(vm)) { uploading = true }
+        AdminError(actionError)
+        state.data["/admin/ads"]?.let { data ->
+            if (data.items().isEmpty()) EmptyState("No audio ads", "Upload an MP3, M4A, AAC, OGG or WAV recording up to 5 MB. Nothing is generated or sampled.")
+            data.items().forEach { ad ->
+                AppCard {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(adminName(ad), Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                        Badge(if (ad.optBoolean("active")) "ACTIVE" else "INACTIVE", if (ad.optBoolean("active")) Green else Muted)
+                    }
+                    Detail("Audio format", ad.text("mimeType").ifBlank { "Not returned" })
+                    Detail("File size", adminFileSize(ad.optInt("sizeBytes", 0)))
+                    Detail("Uploaded", formatDate(ad.text("createdAt")))
+                    ActionButton(if (ad.optBoolean("active")) "Deactivate" else "Activate", enabled = state.enabled(vm)) {
+                        actionError = null
+                        adminPerform(vm, { actionError = it }) {
+                            vm.api.call("PATCH", "/admin/ads/${adminSegment(adminId(ad))}", json("active" to !ad.optBoolean("active")))
+                            state.refresh()
+                            vm.refreshCatalogue()
+                        }
+                    }
+                    OutlinedButton(onClick = { deleting = ad }, enabled = state.enabled(vm)) {
+                        Text("Delete ad", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        }
+        if (uploading) AdminAdEditor(vm, { uploading = false }) { state.refresh(); vm.refreshCatalogue() }
+        deleting?.let { ad ->
+            AdminConfirm(vm, "Delete audio ad?", "Permanently remove \"${adminName(ad)}\" from the backend. Customers will no longer receive it.", "Delete", { deleting = null }) {
+                vm.api.call("DELETE", "/admin/ads/${adminSegment(adminId(ad))}")
+                state.refresh()
+                vm.refreshCatalogue()
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminAdEditor(vm: AppState, onDismiss: () -> Unit, onSaved: () -> Unit) {
+    var title by remember { mutableStateOf("") }
+    var picked by remember { mutableStateOf<AudioPick?>(null) }
+    var active by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        modifier = Modifier.imePadding(),
+        onDismissRequest = { if (!vm.busy) onDismiss() },
+        title = { Text("Upload audio ad") },
+        text = {
+            Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Field("Ad title", title, { title = it }, enabled = !vm.busy)
+                AudioAdPicker(vm, label = if (picked == null) "Choose audio file" else "Replace audio file") { picked = it }
+                picked?.let { Text("${it.fileName} · ${it.mimeType}", color = Muted, fontSize = 12.sp) }
+                Text("MP3, M4A, AAC, OGG or WAV up to 5 MB. The file is stored on your backend and streamed only while the ad is active.", color = Muted, fontSize = 12.sp)
+                AdminCheck("Active", "Show this voice ad on the customer home screen.", active, !vm.busy) { active = it }
+                AdminError(error)
+                if (vm.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = !vm.busy, onClick = {
+                val audio = picked
+                error = when {
+                    title.isBlank() -> "Enter a title for the ad."
+                    audio == null -> "Choose an audio file."
+                    else -> null
+                }
+                if (error == null && audio != null) adminPerform(vm, { error = it }) {
+                    vm.api.call("POST", "/admin/ads", json("title" to title.trim(), "mimeType" to audio.mimeType,
+                        "data" to audio.base64, "active" to active))
+                    vm.message = "Audio ad uploaded by the backend."
+                    onSaved()
+                    onDismiss()
+                }
+            }) { Text("Upload ad") }
+        },
+        dismissButton = { TextButton(enabled = !vm.busy, onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
 @Composable
 private fun AdminReadOnly(vm: AppState, title: String, endpoint: String, description: String) {
     AdminDataPage(vm, title, description, listOf(endpoint)) { state ->
@@ -772,36 +976,70 @@ private fun AdminReadOnly(vm: AppState, title: String, endpoint: String, descrip
 
 @Composable
 private fun AdminSettings(vm: AppState) {
-    AdminDataPage(vm, "App settings", "Update the service identity and customer support contact.", listOf("/admin/settings")) { state ->
+    AdminDataPage(vm, "App settings", "Update the service identity, support contact, logo, currency and monthly price.", listOf("/admin/settings")) { state ->
         state.data["/admin/settings"]?.let { data -> key(data) { AdminSettingsForm(vm, data, state) } }
     }
+}
+
+private fun adminPriceMinor(value: String): Int? {
+    val match = Regex("^(\\d{1,7})(?:\\.(\\d{1,2}))?$").find(value.trim()) ?: return null
+    val whole = match.groupValues[1].toIntOrNull() ?: return null
+    val cents = match.groupValues[2].padEnd(2, '0').toIntOrNull() ?: 0
+    val minor = whole.toLong() * 100 + cents
+    return if (minor in 1..100_000_000) minor.toInt() else null
 }
 
 @Composable
 private fun AdminSettingsForm(vm: AppState, data: JSONObject, state: AdminDataState) {
     var name by remember { mutableStateOf(data.text("appName")) }
     var email by remember { mutableStateOf(data.text("supportEmail")) }
+    var phone by remember { mutableStateOf(data.text("supportPhone")) }
+    var currency by remember { mutableStateOf(data.text("currency").ifBlank { "USD" }) }
+    var price by remember { mutableStateOf(formatMinor(data.optInt("priceMinor", 50))) }
+    var logoUrl by remember { mutableStateOf(data.text("logoUrl")) }
     var error by remember { mutableStateOf<String?>(null) }
     AppCard {
+        Section("App identity")
         Field("App name", name, { name = it }, enabled = state.enabled(vm))
-        Field("Support email", email, { email = it }, keyboard = KeyboardType.Email, enabled = state.enabled(vm))
-        AdminError(error)
-        ActionButton("Save app settings", gold = true, enabled = state.enabled(vm)) {
-            error = when {
-                name.isBlank() -> "Enter the app name."
-                !android.util.Patterns.EMAIL_ADDRESS.matcher(email.trim()).matches() -> "Enter a valid support email address."
-                else -> null
-            }
-            if (error == null) adminPerform(vm, { error = it }) {
-                vm.api.call("PUT", "/admin/settings", json("appName" to name.trim(), "supportEmail" to email.trim()))
-                vm.message = "App settings saved by the backend."
-                state.refresh()
-                vm.refreshCatalogue()
-            }
-        }
-        Text("Trial policy is managed separately under Free trials.", color = Muted)
-        MenuRow("Free trials", "Enable trials and set the duration") { vm.go("admin/trials") }
+        Field("App logo URL", logoUrl, { logoUrl = it }, keyboard = KeyboardType.Uri, enabled = state.enabled(vm))
+        LogoUploadButton(vm, "Logo uploaded. Save app settings to apply it.") { logoUrl = it }
+        Text("Upload a PNG logo up to 2 MB. The saved logo replaces the bundled mark across the app after the catalogue refreshes.", color = Muted, fontSize = 12.sp)
     }
+    AppCard {
+        Section("Support contact")
+        Field("Support email", email, { email = it }, keyboard = KeyboardType.Email, enabled = state.enabled(vm))
+        Field("Support phone / WhatsApp", phone, { phone = it }, keyboard = KeyboardType.Phone, enabled = state.enabled(vm))
+        Text("Digits with country code, for example +252 63 1234567. Leave a field blank to hide that contact in the app.", color = Muted, fontSize = 12.sp)
+    }
+    AppCard {
+        Section("Price and currency")
+        Field("Currency code", currency, { currency = it }, keyboard = KeyboardType.Text, enabled = state.enabled(vm))
+        Field("Monthly price", price, { price = it }, keyboard = KeyboardType.Decimal, enabled = state.enabled(vm))
+        Text("Use a 3–4 letter code such as USD, EUR or SLSH. New payments charge this amount; payments already recorded keep the amount charged at the time.", color = Muted, fontSize = 12.sp)
+    }
+    AdminError(error)
+    ActionButton("Save app settings", gold = true, enabled = state.enabled(vm)) {
+        val minor = adminPriceMinor(price)
+        error = when {
+            name.isBlank() -> "Enter the app name."
+            email.isNotBlank() && !android.util.Patterns.EMAIL_ADDRESS.matcher(email.trim()).matches() -> "Enter a valid support email address."
+            phone.isNotBlank() && !Regex("^\\+?[0-9][0-9 ()-]{6,30}$").matches(phone.trim()) -> "Enter a valid support phone number."
+            !Regex("^[A-Za-z]{3,4}$").matches(currency.trim()) -> "Enter a 3–4 letter currency code."
+            minor == null -> "Enter the monthly price, for example 0.50."
+            logoUrl.isNotBlank() && !adminHttpUrl(logoUrl, httpsOnly = true) -> "Upload a logo or enter a valid HTTPS logo URL."
+            else -> null
+        }
+        if (error == null && minor != null) adminPerform(vm, { error = it }) {
+            vm.api.call("PUT", "/admin/settings", json("appName" to name.trim(), "supportEmail" to email.trim(),
+                "supportPhone" to phone.trim(), "currency" to currency.trim().uppercase(), "priceMinor" to minor,
+                "logoUrl" to logoUrl.trim()))
+            vm.message = "App settings saved by the backend."
+            state.refresh()
+            vm.refreshCatalogue()
+        }
+    }
+    Text("Trial policy is managed separately under Free trials.", color = Muted)
+    MenuRow("Free trials", "Enable trials and set the duration") { vm.go("admin/trials") }
 }
 
 @Composable

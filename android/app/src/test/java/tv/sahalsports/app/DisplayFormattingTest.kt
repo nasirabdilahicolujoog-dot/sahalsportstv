@@ -21,4 +21,10 @@ class DisplayFormattingTest {
     @Test fun dateFormattingUsesReadableYear() {
         assertTrue(formatDate("2026-11-15T12:00:00Z").contains("2026"))
     }
+    @Test fun priceMinorUnitsKeepTwoDecimals() {
+        assertEquals("0.50", formatMinor(50))
+        assertEquals("0.01", formatMinor(1))
+        assertEquals("50.00", formatMinor(5000))
+        assertEquals("0.00", formatMinor(0))
+    }
 }

@@ -43,8 +43,8 @@ val adminMenu = listOf(
     "Dashboard" to "dashboard", "Live stream management" to "streams", "beIN SPORTS channels" to "bein",
     "Sports categories" to "categories", "Customer management" to "customers", "Subscriptions" to "subscriptions",
     "Payment management" to "payments", "ZAAD API settings" to "zaad", "eDahab API settings" to "edahab",
-    "Free trial management" to "trials", "Notifications" to "notifications", "Reports & analytics" to "reports",
-    "App settings" to "settings", "Admin security" to "security", "Activity logs" to "logs")
+    "Free trial management" to "trials", "Notifications" to "notifications", "Audio ads" to "ads",
+    "Reports & analytics" to "reports", "App settings" to "settings", "Admin security" to "security", "Activity logs" to "logs")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun SahalApp(vm: AppState = viewModel()) {

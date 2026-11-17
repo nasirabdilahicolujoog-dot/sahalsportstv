@@ -213,6 +213,97 @@ describe('v1 API security and account lifecycle', { concurrency: false, timeout:
     assertNoCredentials(me.data, [customer.token, customer.credentials.password]);
   });
 
+  it('uploads and streams admin audio ads only while active', async t => {
+    const customer = await register();
+    statusIs(await request('GET', '/admin/ads'), 401);
+    statusIs(await request('GET', '/admin/ads', { token: customer.token }), 403);
+    const audio = Buffer.concat([Buffer.from([0xFF, 0xFB, 0x90, 0x64]), Buffer.alloc(200, 7)]);
+    const body = { title: `Test voice ad ${randomUUID()}`, mimeType: 'audio/mpeg', data: audio.toString('base64'), active: true };
+    for (const data of ['not-base64!', Buffer.from('not an audio file').toString('base64')]) {
+      statusIs(await request('POST', '/admin/ads', { token: admin.token, body: { ...body, data } }), 400);
+    }
+    statusIs(await request('POST', '/admin/ads', { token: customer.token, body }), 403);
+    const uploaded = await request('POST', '/admin/ads', { token: admin.token, body });
+    statusIs(uploaded, 201);
+    t.after(() => pool.query('DELETE FROM audio_ads WHERE id=$1', [uploaded.data.id]));
+    const url = new URL(uploaded.data.url, config.publicBaseUrl);
+    const media = await fetch(`${origin}${url.pathname}`, { redirect: 'manual', signal: AbortSignal.timeout(15_000) });
+    assert.equal(media.status, 200);
+    assert.equal(media.headers.get('content-type'), 'audio/mpeg');
+    assert.ok(Buffer.from(await media.arrayBuffer()).equals(audio), 'Audio media must preserve the uploaded bytes');
+    const list = await request('GET', '/admin/ads', { token: admin.token });
+    statusIs(list, 200);
+    assert.ok(list.data.items.some(item => item.id === uploaded.data.id && item.sizeBytes === audio.length));
+    const catalogue = await request('GET', '/bootstrap');
+    assert.ok(catalogue.data.ads.some(item => item.id === uploaded.data.id), 'Active ads must reach the customer catalogue');
+    const deactivated = await request('PATCH', `/admin/ads/${uploaded.data.id}`, { token: admin.token, body: { active: false } });
+    statusIs(deactivated, 200);
+    assert.equal(deactivated.data.active, false);
+    const hidden = await fetch(`${origin}${url.pathname}`, { redirect: 'manual', signal: AbortSignal.timeout(15_000) });
+    assert.equal(hidden.status, 404, 'Inactive audio must not be served');
+    await hidden.arrayBuffer();
+    statusIs(await request('DELETE', `/admin/ads/${uploaded.data.id}`, { token: admin.token }), 200);
+  });
+
+  it('propagates app identity, contact, currency and price settings to bootstrap', async t => {
+    const original = await request('GET', '/admin/settings', { token: admin.token });
+    statusIs(original, 200);
+    t.after(async () => {
+      const restore = { appName: original.data.appName, supportEmail: original.data.supportEmail,
+        supportPhone: original.data.supportPhone, currency: original.data.currency, priceMinor: original.data.priceMinor,
+        logoUrl: original.data.logoUrl, trialEnabled: original.data.trialEnabled, trialMinutes: original.data.trialMinutes };
+      await request('PUT', '/admin/settings', { token: admin.token, body: restore });
+    });
+    statusIs(await request('PUT', '/admin/settings', {
+      token: admin.token, body: { currency: 'SOS', priceMinor: 0 },
+    }), 400);
+    const saved = await request('PUT', '/admin/settings', {
+      token: admin.token, body: { supportPhone: '+252 63 1234567', currency: 'slsh', priceMinor: 5000, supportEmail: 'support@example.test' },
+    });
+    statusIs(saved, 200);
+    assert.equal(saved.data.currency, 'SLSH');
+    assert.equal(saved.data.priceMinor, 5000);
+    const catalogue = await request('GET', '/bootstrap');
+    assert.equal(catalogue.data.currency, 'SLSH');
+    assert.equal(catalogue.data.priceMinor, 5000);
+    assert.equal(catalogue.data.price, 50);
+    assert.equal(catalogue.data.supportPhone, '+252 63 1234567');
+    assert.equal(catalogue.data.supportEmail, 'support@example.test');
+  });
+
+  it('lets an administrator edit customer details and reset a password while revoking sessions', async t => {
+    const customer = await register();
+    const secondSession = await login(customer.credentials);
+    statusIs(await request('PATCH', `/admin/customers/${customer.user.id}`, {
+      token: customer.token, body: { name: 'Unauthorized Change' },
+    }), 403);
+    const email = `edited-${randomUUID()}@example.test`;
+    const phone = `+25263${randomInt(10_000_000, 100_000_000)}`;
+    const edited = await request('PATCH', `/admin/customers/${customer.user.id}`, {
+      token: admin.token, body: { name: 'Edited Customer', email, phone },
+    });
+    statusIs(edited, 200);
+    assert.equal(edited.data.customer.email, email);
+    assert.equal(edited.data.customer.phone, phone);
+    const me = await request('GET', '/me', { token: customer.token });
+    statusIs(me, 200);
+    assert.equal(me.data.user.email, email);
+    assert.equal(me.data.user.phone, phone);
+    const duplicate = await register();
+    statusIs(await request('PATCH', `/admin/customers/${duplicate.user.id}`, {
+      token: admin.token, body: { email },
+    }), 409);
+    const reset = randomBytes(24).toString('base64url');
+    statusIs(await request('POST', `/admin/customers/${customer.user.id}/password`, {
+      token: admin.token, body: { newPassword: reset },
+    }), 200);
+    for (const token of [customer.token, secondSession.token]) statusIs(await request('GET', '/me', { token }), 401);
+    statusIs(await request('POST', '/auth/login', {
+      body: { identifier: email, password: customer.credentials.password },
+    }), 401);
+    await login({ ...customer.credentials, email, phone, password: reset }, email);
+  });
+
   it('reports zero remaining time for an expired trial and does not restart it', async () => {
     const customer = await register();
     const { rows: [original] } = await pool.query(`INSERT INTO trials(user_id,started_at,expires_at)

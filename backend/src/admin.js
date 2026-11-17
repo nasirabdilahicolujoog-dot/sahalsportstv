@@ -2,13 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { audit, transaction } from './db.js';
 import { fail, validate } from './errors.js';
-import { encrypt, decrypt, uuidSchema } from './security.js';
+import { encrypt, decrypt, hashPassword, uuidSchema, emailSchema, nameSchema, passwordSchema, phoneSchema } from './security.js';
 import { validateStreamUrl } from './streams.js';
 import { paymentView } from './payments.js';
 
 export const channelView = c => ({ id: c.id, name: c.name, category: c.category, quality: c.quality,
   logoUrl: c.logo_url || '', active: c.active, premium: c.premium, licensed: c.licensed, streamConfigured: Boolean(c.stream_url_encrypted) });
-const settingsView = s => ({ trialEnabled: s.trial_enabled, trialMinutes: s.trial_minutes, appName: s.app_name, supportEmail: s.support_email });
+const settingsView = s => ({ trialEnabled: s.trial_enabled, trialMinutes: s.trial_minutes, appName: s.app_name,
+  supportEmail: s.support_email, supportPhone: s.support_phone, logoUrl: s.logo_url,
+  currency: s.currency, priceMinor: s.price_minor });
 const providerName = value => validate(z.enum(['zaad', 'edahab']), value);
 const providerView = p => ({ provider: p.provider, merchantId: p.merchant_id, apiUrl: p.api_url,
   environment: p.environment, apiKeyConfigured: Boolean(p.api_key_encrypted), secretKeyConfigured: Boolean(p.secret_key_encrypted) });
@@ -16,6 +18,17 @@ const idParam = req => validate(uuidSchema, req.params.id);
 const channelSchema = z.object({ name: z.string().trim().min(1).max(120), category: z.string().trim().min(1).max(60),
   quality: z.string().trim().min(1).max(30), streamUrl: z.string().trim().max(8192).optional(),
   logoUrl: z.string().trim().max(2048).optional(), active: z.boolean(), premium: z.boolean(), licensed: z.boolean() }).strict();
+const adMimeTypes = ['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/ogg', 'audio/wav'];
+const audioAdView = (row, config) => ({ id: row.id, title: row.title, mimeType: row.mime_type, active: row.active,
+  sizeBytes: row.size_bytes, createdAt: row.created_at, url: `${config.publicBaseUrl}/v1/ads/${row.id}/audio` });
+const audioSignature = (mime, data) => {
+  const ascii = (start, end) => data.subarray(start, end).toString('latin1');
+  if (mime === 'audio/mpeg') return (data[0] === 0xFF && (data[1] & 0xE0) === 0xE0) || ascii(0, 3) === 'ID3';
+  if (mime === 'audio/mp4') return data.length > 12 && ascii(4, 8) === 'ftyp';
+  if (mime === 'audio/ogg') return ascii(0, 4) === 'OggS';
+  if (mime === 'audio/wav') return ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WAVE';
+  return data[0] === 0xFF && (data[1] & 0xF0) === 0xF0;
+};
 
 export function registerAdminRoutes(router, { pool, config, payments, adapters, notifications }) {
   router.get('/dashboard', async (req, res) => {
@@ -84,20 +97,54 @@ export function registerAdminRoutes(router, { pool, config, payments, adapters, 
       WHERE role='customer' AND status<>'deleted' AND ($1='' OR name ILIKE '%'||$1||'%' OR email ILIKE '%'||$1||'%' OR phone ILIKE '%'||$1||'%') ORDER BY created_at DESC LIMIT 1000`, [search]);
     res.json({ items: rows });
   });
-  async function changeCustomer(req, res) {
+  router.patch('/customers/:id', async (req, res) => {
     const id = idParam(req);
-    const status = req.method === 'DELETE' ? 'deleted' : validate(z.object({ status: z.enum(['active','suspended']) }).strict(), req.body).status;
+    const body = validate(z.object({ name: nameSchema.optional(), email: emailSchema.optional(), phone: phoneSchema.optional(),
+      status: z.enum(['active', 'suspended']).optional() }).strict()
+      .refine(value => Object.keys(value).length > 0), req.body);
+    let saved;
+    try {
+      saved = await transaction(pool, async db => {
+        const { rows: [current] } = await db.query("SELECT * FROM users WHERE id=$1 AND role='customer' AND status<>'deleted' FOR UPDATE", [id]);
+        if (!current) fail(404, 'customer_not_found', 'Customer not found.');
+        const status = body.status ?? current.status;
+        const { rows: [updated] } = await db.query(`UPDATE users SET name=$2,email=$3,phone=$4,status=$5 WHERE id=$1
+          RETURNING id,name,email,phone,status,created_at AS "createdAt"`,
+        [id, body.name ?? current.name, body.email ?? current.email, body.phone ?? current.phone, status]);
+        if (status !== 'active') await db.query('DELETE FROM sessions WHERE user_id=$1', [id]);
+        await audit(db, req.user.id, 'customer.updated', 'user', id, { fields: Object.keys(body) });
+        return updated;
+      });
+    } catch (err) {
+      if (err?.code === '23505') fail(409, 'duplicate_customer', 'That email address or phone number is already used by another account.');
+      throw err;
+    }
+    res.json({ message: 'Customer details updated.', customer: saved });
+  });
+  router.delete('/customers/:id', async (req, res) => {
+    const id = idParam(req);
     await transaction(pool, async db => {
-      const { rowCount } = await db.query(`UPDATE users SET status=$2,deleted_at=CASE WHEN $2='deleted' THEN now() ELSE deleted_at END
-        WHERE id=$1 AND role='customer' AND status<>'deleted'`, [id, status]);
+      const { rowCount } = await db.query(`UPDATE users SET status='deleted',deleted_at=now()
+        WHERE id=$1 AND role='customer' AND status<>'deleted'`, [id]);
       if (!rowCount) fail(404, 'customer_not_found', 'Customer not found.');
-      if (status !== 'active') await db.query('DELETE FROM sessions WHERE user_id=$1', [id]);
-      await audit(db, req.user.id, `customer.${status}`, 'user', id);
+      await db.query('DELETE FROM sessions WHERE user_id=$1', [id]);
+      await audit(db, req.user.id, 'customer.deleted', 'user', id);
     });
-    res.json({ message: status === 'deleted' ? 'Account closed. Financial, trial and audit history is retained.' : 'Customer status updated.' });
-  }
-  router.patch('/customers/:id', changeCustomer);
-  router.delete('/customers/:id', changeCustomer);
+    res.json({ message: 'Account closed. Financial, trial and audit history is retained.' });
+  });
+  router.post('/customers/:id/password', async (req, res) => {
+    const id = idParam(req);
+    const { newPassword } = validate(z.object({ newPassword: passwordSchema }).strict(), req.body);
+    const hash = await hashPassword(newPassword);
+    await transaction(pool, async db => {
+      const { rowCount } = await db.query(`UPDATE users SET password_hash=$2
+        WHERE id=$1 AND role='customer' AND status<>'deleted'`, [id, hash]);
+      if (!rowCount) fail(404, 'customer_not_found', 'Customer not found.');
+      await db.query('DELETE FROM sessions WHERE user_id=$1', [id]);
+      await audit(db, req.user.id, 'customer.password_reset', 'user', id);
+    });
+    res.json({ message: 'Password reset. The customer has been signed out on every device.' });
+  });
   router.get('/subscriptions', async (req, res) => {
     const { rows } = await pool.query(`SELECT s.id,s.user_id AS "userId",u.name,u.email,s.started_at AS "startedAt",s.expires_at AS "expiresAt",
       s.cancelled_at AS "cancelledAt",s.expires_at>now() AND s.cancelled_at IS NULL AS active
@@ -169,14 +216,64 @@ export function registerAdminRoutes(router, { pool, config, payments, adapters, 
   });
   router.put('/settings', async (req, res) => {
     const body = validate(z.object({ trialEnabled: z.boolean().optional(), trialMinutes: z.number().int().min(1).max(120).optional(),
-      appName: z.string().trim().min(1).max(100).optional(), supportEmail: z.union([z.literal(''), z.email()]).optional() }).strict().refine(v => Object.keys(v).length > 0), req.body);
+      appName: z.string().trim().min(1).max(100).optional(), supportEmail: z.union([z.literal(''), z.email()]).optional(),
+      supportPhone: z.union([z.literal(''), z.string().trim().regex(/^\+?[0-9][0-9 ()-]{6,30}$/)]).optional(),
+      currency: z.string().trim().regex(/^[A-Za-z]{3,4}$/).transform(value => value.toUpperCase()).optional(),
+      priceMinor: z.number().int().min(1).max(100000000).optional(),
+      logoUrl: z.string().trim().max(2048).optional() }).strict().refine(value => Object.keys(value).length > 0), req.body);
+    if (body.logoUrl) {
+      let url;
+      try { url = new URL(body.logoUrl); } catch { fail(400, 'invalid_logo', 'Use a valid logo URL.'); }
+      const local = url.origin === config.publicBaseUrl && /^\/v1\/media\/[a-f0-9-]{36}$/.test(url.pathname);
+      if ((url.protocol !== 'https:' && !local) || url.username || url.password || url.hash) fail(400, 'invalid_logo', 'Use HTTPS or an uploaded logo.');
+    }
     const row = await transaction(pool, async db => {
       const { rows: [saved] } = await db.query(`UPDATE app_settings SET trial_enabled=coalesce($1,trial_enabled),trial_minutes=coalesce($2,trial_minutes),
-        app_name=coalesce($3,app_name),support_email=coalesce($4,support_email) RETURNING *`, [body.trialEnabled,body.trialMinutes,body.appName,body.supportEmail]);
+        app_name=coalesce($3,app_name),support_email=coalesce($4,support_email),support_phone=coalesce($5,support_phone),
+        currency=coalesce($6,currency),price_minor=coalesce($7,price_minor),logo_url=coalesce($8,logo_url) RETURNING *`,
+      [body.trialEnabled, body.trialMinutes, body.appName, body.supportEmail, body.supportPhone,
+        body.currency, body.priceMinor, body.logoUrl]);
       await audit(db, req.user.id, 'settings.updated', 'settings', null, body);
       return saved;
     });
     res.json(settingsView(row));
+  });
+  router.get('/ads', async (req, res) => {
+    const { rows } = await pool.query(`SELECT id,title,mime_type,active,octet_length(data) AS size_bytes,
+      created_at FROM audio_ads ORDER BY created_at DESC LIMIT 100`);
+    res.json({ items: rows.map(row => audioAdView(row, config)) });
+  });
+  router.post('/ads', async (req, res) => {
+    const body = validate(z.object({ title: z.string().trim().min(1).max(120),
+      mimeType: z.enum(adMimeTypes), data: z.string().min(4).max(7000000), active: z.boolean().optional() }).strict(), req.body);
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(body.data) || body.data.length % 4 !== 0) fail(400, 'invalid_audio', 'A base64 audio file is required.');
+    const data = Buffer.from(body.data, 'base64');
+    if (data.length < 1 || data.length > 5 * 1024 * 1024 || !audioSignature(body.mimeType, data)) {
+      fail(400, 'invalid_audio', 'The file is not a supported audio recording of at most 5 MB.');
+    }
+    const id = randomUUID();
+    const { rows: [row] } = await pool.query(`INSERT INTO audio_ads(id,title,mime_type,data,active,actor_id)
+      VALUES($1,$2,$3,$4,$5,$6) RETURNING id,title,mime_type,active,octet_length(data) AS size_bytes,created_at`,
+    [id, body.title, body.mimeType, data, body.active ?? true, req.user.id]);
+    await audit(pool, req.user.id, 'ad.created', 'audio_ad', id, { mimeType: body.mimeType, sizeBytes: data.length });
+    res.status(201).json(audioAdView(row, config));
+  });
+  router.patch('/ads/:id', async (req, res) => {
+    const id = idParam(req);
+    const body = validate(z.object({ title: z.string().trim().min(1).max(120).optional(), active: z.boolean().optional() }).strict()
+      .refine(value => Object.keys(value).length > 0), req.body);
+    const { rows: [row] } = await pool.query(`UPDATE audio_ads SET title=coalesce($2,title),active=coalesce($3,active),updated_at=now()
+      WHERE id=$1 RETURNING id,title,mime_type,active,octet_length(data) AS size_bytes,created_at`, [id, body.title, body.active]);
+    if (!row) fail(404, 'ad_not_found', 'Audio ad not found.');
+    await audit(pool, req.user.id, 'ad.updated', 'audio_ad', id, body);
+    res.json(audioAdView(row, config));
+  });
+  router.delete('/ads/:id', async (req, res) => {
+    const id = idParam(req);
+    const { rowCount } = await pool.query('DELETE FROM audio_ads WHERE id=$1', [id]);
+    if (!rowCount) fail(404, 'ad_not_found', 'Audio ad not found.');
+    await audit(pool, req.user.id, 'ad.deleted', 'audio_ad', id);
+    res.json({ message: 'Audio ad deleted.' });
   });
   router.get('/trials', async (req, res) => {
     const { rows } = await pool.query(`SELECT t.user_id AS "userId",u.name,u.email,t.started_at AS "startedAt",t.expires_at AS "expiresAt",
@@ -188,7 +285,8 @@ export function registerAdminRoutes(router, { pool, config, payments, adapters, 
       count(*) FILTER(WHERE status='succeeded')::int AS successful,
       coalesce(sum(amount_minor) FILTER(WHERE status='succeeded'),0)::float/100 AS revenue,
       count(*) FILTER(WHERE status='refunded')::int AS refunded FROM payments GROUP BY 1,2 ORDER BY 1 DESC LIMIT 180`);
-    res.json({ currency: 'USD', items: rows });
+    const { rows: [settings] } = await pool.query('SELECT currency FROM app_settings');
+    res.json({ currency: settings.currency, items: rows });
   });
   router.get('/logs', async (req, res) => {
     const { rows } = await pool.query('SELECT id,actor_id AS "actorId",action,target_type AS "targetType",target_id AS "targetId",details,created_at AS "createdAt" FROM audit_logs ORDER BY id DESC LIMIT 500');

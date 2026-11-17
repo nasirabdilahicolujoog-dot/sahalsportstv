@@ -66,8 +66,8 @@ CREATE TABLE payments (
  user_id uuid NOT NULL REFERENCES users(id),
  provider text NOT NULL CHECK (provider IN ('zaad','edahab')),
  phone text NOT NULL,
- amount_minor integer NOT NULL DEFAULT 50 CHECK (amount_minor = 50),
- currency text NOT NULL DEFAULT 'USD' CHECK (currency = 'USD'),
+ amount_minor integer NOT NULL DEFAULT 50 CHECK (amount_minor > 0),
+ currency text NOT NULL DEFAULT 'USD' CHECK (currency ~ '^[A-Z]{3,4}$'),
  status text NOT NULL DEFAULT 'initiating' CHECK (status IN ('initiating','pending','succeeded','failed','refunded')),
  provider_reference text,
  provider_transaction_id text,
@@ -105,9 +105,24 @@ CREATE TABLE app_settings (
  trial_enabled boolean NOT NULL DEFAULT true,
  trial_minutes integer NOT NULL DEFAULT 15 CHECK (trial_minutes BETWEEN 1 AND 120),
  app_name text NOT NULL DEFAULT 'SAHAL SPORTS TV',
- support_email text NOT NULL DEFAULT ''
+ support_email text NOT NULL DEFAULT '',
+ support_phone text NOT NULL DEFAULT '',
+ logo_url text NOT NULL DEFAULT '',
+ currency text NOT NULL DEFAULT 'USD' CHECK (currency ~ '^[A-Z]{3,4}$'),
+ price_minor integer NOT NULL DEFAULT 50 CHECK (price_minor BETWEEN 1 AND 100000000)
 );
 INSERT INTO app_settings DEFAULT VALUES;
+CREATE TABLE audio_ads (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ title text NOT NULL CHECK (length(title) BETWEEN 1 AND 120),
+ mime_type text NOT NULL CHECK (mime_type IN ('audio/mpeg','audio/mp4','audio/aac','audio/ogg','audio/wav')),
+ data bytea NOT NULL CHECK (octet_length(data) BETWEEN 1 AND 5242880),
+ active boolean NOT NULL DEFAULT true,
+ actor_id uuid NOT NULL REFERENCES users(id),
+ created_at timestamptz NOT NULL DEFAULT now(),
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX audio_ads_active_idx ON audio_ads(active, created_at DESC);
 CREATE TABLE audit_logs (
  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
  actor_id uuid REFERENCES users(id),

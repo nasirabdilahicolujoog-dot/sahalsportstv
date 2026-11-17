@@ -28,6 +28,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 
 val Ink = Color(0xFF09051A)
 val Panel = Color(0xFF17102C)
@@ -36,6 +37,9 @@ val Gold = Color(0xFFFFD12B)
 val Muted = Color(0xFFABA2BE)
 val Green = Color(0xFF45D697)
 val Line = Color(0xFF302441)
+
+/** Set from the backend bootstrap so an administrator-uploaded app logo replaces the bundled mark. */
+var appLogoUrl by mutableStateOf("")
 
 @Composable fun SahalTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = darkColorScheme(primary = Purple, secondary = Gold, background = Ink, surface = Panel,
@@ -47,9 +51,14 @@ val Line = Color(0xFF302441)
         verticalArrangement = Arrangement.spacedBy(18.dp), content = content)
 }
 @Composable fun Brand(large: Boolean = false) {
-    if (large) Image(painterResource(R.drawable.brand_lockup), "Sahal Sports TV", Modifier.size(160.dp), contentScale = ContentScale.Fit)
+    val remote = appLogoUrl.takeIf { it.startsWith("https://") }
+    if (large) {
+        if (remote != null) AsyncImage(model = remote, contentDescription = "Sahal Sports TV", modifier = Modifier.size(160.dp), contentScale = ContentScale.Fit)
+        else Image(painterResource(R.drawable.brand_lockup), "Sahal Sports TV", Modifier.size(160.dp), contentScale = ContentScale.Fit)
+    }
     else Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-        Image(painterResource(R.drawable.brand_mark), null, Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)))
+        if (remote != null) AsyncImage(model = remote, contentDescription = null, modifier = Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)), contentScale = ContentScale.Fit)
+        else Image(painterResource(R.drawable.brand_mark), null, Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)))
         Column { Text("Sahal", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, lineHeight = 23.sp)
             Text("SPORTS TV", fontSize = 10.sp, color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 2.sp) }
     }

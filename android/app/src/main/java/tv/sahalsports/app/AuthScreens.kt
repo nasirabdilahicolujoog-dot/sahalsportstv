@@ -41,7 +41,7 @@ import androidx.compose.ui.unit.sp
         Spacer(Modifier.height(15.dp))
         Text("Watch Live Sports, Anytime, Anywhere", color = Muted, fontSize = 14.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(25.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { Badge("HD STREAMING"); Badge("15 MIN FREE", Green) }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { Badge("HD STREAMING"); Badge("${vm.trialMinutes} MIN FREE", Green) }
         Spacer(Modifier.height(25.dp))
         ActionButton("Login", enabled = !vm.busy) { vm.go("login") }
         Spacer(Modifier.height(12.dp))
@@ -61,7 +61,6 @@ import androidx.compose.ui.unit.sp
     var email by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var confirmation by remember { mutableStateOf("") }
-    var remember by rememberSaveable { mutableStateOf(true) }
     var agree by rememberSaveable { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().imePadding().padding(horizontal = 26.dp).padding(bottom = 28.dp),
@@ -92,7 +91,7 @@ import androidx.compose.ui.unit.sp
                 Text("Terms & Conditions", Modifier.clickable { vm.go("terms") }, color = Gold, fontSize = 12.sp)
             }
         } else Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(remember, { remember = it }); Text("Remember me", fontSize = 12.sp)
+            Text("You stay signed in on this device.", fontSize = 12.sp, color = Muted)
             Spacer(Modifier.weight(1f)); TextButton(onClick = { vm.go("forgot") }) { Text("Forgot password?", fontSize = 11.sp, color = Gold) }
         }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
@@ -108,7 +107,7 @@ import androidx.compose.ui.unit.sp
             }
             if (error == null) {
                 if (register) vm.register(name, phone, email, password)
-                else vm.login(email, password, remember, admin)
+                else vm.login(email, password, admin)
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {

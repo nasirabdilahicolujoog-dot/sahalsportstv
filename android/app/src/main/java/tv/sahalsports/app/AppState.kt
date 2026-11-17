@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.net.URI
@@ -30,15 +31,18 @@ class AppState(application: Application) : AndroidViewModel(application) {
     val isAdmin get() = user?.text("role") == "admin"
     val categories = listOf("Football", "Basketball", "Tennis", "UFC", "Cricket", "Other Sports")
     val channels get() = bootstrap.optJSONArray("channels")?.objects().orEmpty()
+    val ads get() = bootstrap.optJSONArray("ads")?.objects().orEmpty()
+    val currency get() = bootstrap.text("currency", "USD")
+    val priceMinor get() = bootstrap.optInt("priceMinor", 50)
+    val priceValue get() = formatMinor(priceMinor)
+    val priceLabel get() = "$priceValue $currency"
+    val trialMinutes get() = bootstrap.optInt("trialMinutes", 15)
+    val supportEmail get() = bootstrap.text("supportEmail")
+    val supportPhone get() = bootstrap.text("supportPhone")
     init {
         api.token = vault.load()
         refreshCatalogue()
-        if (api.token != null) perform {
-            account = api.call("GET", "/me")
-            user = account.optJSONObject("user")
-            nav(if (isAdmin) "admin/dashboard" else "home")
-            registerNotifications()
-        }
+        if (api.token != null) restoreSession()
     }
     fun go(destination: String) { history.add(route); route = destination }
     fun nav(destination: String) { history.clear(); route = destination }
@@ -61,10 +65,31 @@ class AppState(application: Application) : AndroidViewModel(application) {
     }
     fun refreshCatalogue() {
         viewModelScope.launch {
-            try { bootstrap = api.call("GET", "/bootstrap"); connectionError = null }
-            catch (e: Exception) {
+            try {
+                bootstrap = api.call("GET", "/bootstrap")
+                appLogoUrl = bootstrap.text("logoUrl")
+                connectionError = null
+            } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 connectionError = e.message
+            }
+        }
+    }
+    /** Keeps the saved session while the free backend wakes up; a 401 still signs out. */
+    fun restoreSession(attempts: Int = 3) = perform {
+        var attempt = 0
+        while (true) {
+            try {
+                account = api.call("GET", "/me")
+                user = account.optJSONObject("user")
+                nav(if (isAdmin) "admin/dashboard" else "home")
+                registerNotifications()
+                return@perform
+            } catch (e: ApiException) {
+                throw e
+            } catch (e: Exception) {
+                if (++attempt >= attempts) { nav("home"); throw e }
+                delay(3000)
             }
         }
     }
@@ -80,7 +105,7 @@ class AppState(application: Application) : AndroidViewModel(application) {
             }
         }
     }
-    fun login(identifier: String, password: String, remember: Boolean, admin: Boolean = false) = perform {
+    fun login(identifier: String, password: String, admin: Boolean = false) = perform {
         val result = api.call("POST", "/auth/login", json("identifier" to identifier.trim(), "password" to password))
         api.token = result.text("token")
         val signedIn = result.optJSONObject("user")
@@ -89,14 +114,14 @@ class AppState(application: Application) : AndroidViewModel(application) {
             throw IllegalArgumentException("This account does not have administrator permission.")
         }
         user = signedIn
-        vault.save(if (remember) api.token else null)
+        vault.save(api.token)
         refreshAccount()
         nav(if (isAdmin) "admin/dashboard" else "home")
         registerNotifications()
     }
     fun register(name: String, phone: String, email: String, password: String) = perform {
         val result = api.call("POST", "/auth/register", json("name" to name.trim(), "phone" to phone.trim(), "email" to email.trim(), "password" to password))
-        api.token = result.text("token"); user = result.optJSONObject("user"); vault.save(null)
+        api.token = result.text("token"); user = result.optJSONObject("user"); vault.save(api.token)
         refreshAccount(); nav("home"); registerNotifications()
     }
     fun logout() = perform {
@@ -107,15 +132,16 @@ class AppState(application: Application) : AndroidViewModel(application) {
             nav("welcome")
         }
     }
-    fun requireLogin(destination: String) { if (user == null) go("login") else go(destination) }
+    fun requireLogin(destination: String) { if (user == null && api.token == null) go("login") else go(destination) }
     fun startTrial() {
-        if (user == null) { go("login"); return }
+        if (user == null && api.token == null) { go("login"); return }
         perform { api.call("POST", "/trial/start"); refreshAccount(); go("trial") }
     }
     fun play(channel: JSONObject) {
         selectedChannel = channel
-        if (user == null) { go("login"); return }
+        if (user == null && api.token == null) { go("login"); return }
         perform {
+            if (user == null) { account = api.call("GET", "/me"); user = account.optJSONObject("user") }
             try {
                 playback = api.call("GET", "/channels/${channel.text("id")}/playback")
                 go("player")
@@ -146,7 +172,9 @@ class AppState(application: Application) : AndroidViewModel(application) {
             api.token = null; vault.save(null); user = null; account = JSONObject(); payment = null; playback = null
             PushSupport.clear()
             api.baseUrl = base; preferences.edit().putString("base_url", base).apply()
+            appLogoUrl = ""
             bootstrap = JSONObject(); refreshCatalogue(); nav("welcome"); message = "Backend address saved."
         }.onFailure { message = it.message }
     }
 }
+fun formatMinor(minor: Int): String = "${minor / 100}.${(minor % 100).toString().padStart(2, '0')}"

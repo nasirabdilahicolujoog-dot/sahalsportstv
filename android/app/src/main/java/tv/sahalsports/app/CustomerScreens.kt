@@ -22,11 +22,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import org.json.JSONObject
 import java.time.Instant
 import java.time.ZoneId
@@ -69,6 +74,10 @@ import java.time.format.DateTimeFormatter
                     Icon(Icons.Rounded.PlayArrow, null, Modifier.size(20.dp)); Spacer(Modifier.width(4.dp)); Text("Explore channels", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             }
+        }
+        if (vm.ads.isNotEmpty()) {
+            Section("Advertisement")
+            AudioAdCard(vm, vm.ads.first())
         }
         Column {
             Section("Live channels", "View all") { vm.nav("live") }
@@ -140,8 +149,54 @@ fun openChannel(vm: AppState, channel: JSONObject) {
         .clickable { vm.go("subscription") }.padding(18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Icon(Icons.Rounded.WorkspacePremium, null, Modifier.size(36.dp), tint = Gold)
         Column(Modifier.weight(1f)) { Text("A little price. All the action.", fontSize = 14.sp, fontWeight = FontWeight.Bold)
-            Text("Go Premium · $0.50 / month", color = Gold, fontSize = 12.sp) }
+            Text("Go Premium · ${vm.priceLabel} / month", color = Gold, fontSize = 12.sp) }
         Icon(Icons.Rounded.ArrowForward, "View Premium", tint = Gold, modifier = Modifier.size(20.dp))
+    }
+}
+@Composable fun AudioAdCard(vm: AppState, ad: JSONObject) {
+    val context = LocalContext.current
+    val url = ad.text("url")
+    if (!remember(url, vm.api.baseUrl) { isTrustedPlaybackUrl(url, vm.api.baseUrl) }) return
+    var playing by remember(url) { mutableStateOf(false) }
+    var failed by remember(url) { mutableStateOf(false) }
+    val player = remember(url) {
+        ExoPlayer.Builder(context).build().apply {
+            val item = MediaItem.Builder().setUri(url).apply {
+                ad.text("mimeType").takeIf { it.isNotBlank() }?.let { setMimeType(it) }
+            }.build()
+            setMediaItem(item)
+        }
+    }
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_ENDED) { playing = false; player.seekTo(0) }
+            }
+            override fun onPlayerError(error: PlaybackException) { playing = false; failed = true }
+        }
+        player.addListener(listener)
+        onDispose { player.removeListener(listener); player.release() }
+    }
+    AppCard {
+        Row(Modifier.fillMaxWidth().clickable {
+            failed = false
+            if (playing) player.pause() else {
+                if (player.playbackState == Player.STATE_IDLE) player.prepare()
+                if (player.playbackState == Player.STATE_ENDED) player.seekTo(0)
+                player.play()
+            }
+            playing = !playing
+        }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(13.dp)) {
+            Box(Modifier.size(45.dp).clip(CircleShape).background(Purple.copy(alpha = .25f)), contentAlignment = Alignment.Center) {
+                Icon(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (playing) "Pause audio ad" else "Play audio ad", Modifier.size(26.dp), tint = Gold)
+            }
+            Column(Modifier.weight(1f)) {
+                Text(ad.text("title").ifBlank { "Sahal Sports TV advertisement" }, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text(if (playing) "Playing voice ad…" else "Voice advertisement · tap to listen", color = Muted, fontSize = 11.sp)
+            }
+            Badge("AD")
+        }
+        if (failed) Text("This audio ad could not be played. Check your connection and try again.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
     }
 }
 @Composable fun ChannelsScreen(vm: AppState, search: Boolean) {

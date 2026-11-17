@@ -139,16 +139,20 @@ import androidx.compose.ui.unit.sp
                     Text("Payment pending?", fontWeight = FontWeight.Bold)
                     Text("Keep your transaction reference. Never send your mobile money PIN or password to anyone claiming to be support.", color = Muted, fontSize = 13.sp, lineHeight = 21.sp)
                 }
+                if (vm.supportEmail.isNotBlank() || vm.supportPhone.isNotBlank()) AppCard {
+                    Text("Contact the service", fontWeight = FontWeight.Bold)
+                    if (vm.supportEmail.isNotBlank()) Detail("Support email", vm.supportEmail)
+                    if (vm.supportPhone.isNotBlank()) Detail("Support phone", vm.supportPhone)
+                } else Text("The service operator has not published a support contact yet.", color = Muted, fontSize = 12.sp)
                 MenuRow("Review payment history", icon = Icons.Rounded.ReceiptLong) { vm.requireLogin("history") }
                 MenuRow("Connection troubleshooting", icon = Icons.Rounded.Wifi) { vm.go("connection") }
-                Text("The service operator must publish a support contact before public release.", color = Muted, fontSize = 12.sp)
             }
             "privacy" -> {
                 Heading("Privacy & your data")
                 AppCard {
                     Text("Your account information", fontWeight = FontWeight.Bold)
                     Text("The backend processes your name, phone number, email, subscription and payment references to provide access. Mobile money PINs are never requested by this app. Payment verification is handled server-to-server.", color = Muted, fontSize = 13.sp, lineHeight = 22.sp)
-                    Text("Session tokens saved with Remember me are encrypted with Android Keystore. Admin actions are audited on the backend.", color = Muted, fontSize = 13.sp, lineHeight = 22.sp)
+                    Text("Your session token is encrypted with Android Keystore and restored automatically on launch. Admin actions are audited on the backend.", color = Muted, fontSize = 13.sp, lineHeight = 22.sp)
                 }
                 Text("Release requirement: the operator must publish their legal identity, retention policy, support contact and data rights procedure.", color = Gold, fontSize = 12.sp, lineHeight = 20.sp)
             }
@@ -156,7 +160,7 @@ import androidx.compose.ui.unit.sp
                 Heading("Service terms", "Launch draft — subject to the operator's published legal terms.")
                 AppCard {
                     Text("Premium access", fontWeight = FontWeight.Bold)
-                    Text("A monthly subscription costs $0.50 USD. Eligible accounts may start one 15-minute free trial. Trial time runs continuously after activation, including when the app is closed. Access stops when the trial or subscription expires.", color = Muted, fontSize = 13.sp, lineHeight = 22.sp)
+                    Text("A monthly subscription costs ${vm.priceLabel}. Eligible accounts may start one ${vm.trialMinutes}-minute free trial. Trial time runs continuously after activation, including when the app is closed. Access stops when the trial or subscription expires.", color = Muted, fontSize = 13.sp, lineHeight = 22.sp)
                     Text("Only licensed content may be distributed. Channel availability depends on the service operator's rights and configuration. Payment access begins only after provider verification.", color = Muted, fontSize = 13.sp, lineHeight = 22.sp)
                 }
                 Text("The operator must publish final licensing, refund, cancellation and support terms before accepting public subscriptions.", color = Gold, fontSize = 12.sp, lineHeight = 20.sp)
@@ -164,7 +168,7 @@ import androidx.compose.ui.unit.sp
             "about" -> {
                 Brand(large = true)
                 Heading("Sahal Sports TV", "Watch Live Sports, Anytime, Anywhere")
-                AppCard { Detail("Version", BuildConfig.VERSION_NAME); Detail("Platform", "Native Android"); Detail("Plan", "$0.50 / month"); Detail("Free trial", "15 minutes") }
+                AppCard { Detail("Version", BuildConfig.VERSION_NAME); Detail("Platform", "Native Android"); Detail("Plan", "${vm.priceLabel} / month"); Detail("Free trial", "${vm.trialMinutes} minutes") }
                 Text("One application. A complete customer experience and a separate, role-protected mobile administration workspace.", color = Muted, fontSize = 13.sp, lineHeight = 22.sp)
                 if (vm.user == null) TextButton(onClick = { vm.go("admin-login") }) { Text("Administrator sign in") }
             }
